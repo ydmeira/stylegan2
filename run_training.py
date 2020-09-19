@@ -11,7 +11,7 @@ import sys
 
 import dnnlib
 from dnnlib import EasyDict
-
+from training import misc
 from metrics.metric_defaults import metric_defaults
 
 #----------------------------------------------------------------------------
@@ -33,7 +33,7 @@ _valid_configs = [
 
 #----------------------------------------------------------------------------
 
-def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, metrics, resume_pkl=None, resume_kimg=0.0):
+def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, mirror_augment, metrics, image_snapshot_ticks, network_snapshot_ticks, resume_pkl):
     train     = EasyDict(run_func_name='training.training_loop.training_loop') # Options for training loop.
     G         = EasyDict(func_name='training.networks_stylegan2.G_main')       # Options for generator network.
     D         = EasyDict(func_name='training.networks_stylegan2.D_stylegan2')  # Options for discriminator network.
@@ -45,14 +45,19 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     grid      = EasyDict(size='8k', layout='random')                           # Options for setup_snapshot_image_grid().
     sc        = dnnlib.SubmitConfig()                                          # Options for dnnlib.submit_run().
     tf_config = {'rnd.np_random_seed': 1000}                                   # Options for tflib.init_tf().
-
+    try:
+        pkl, kimg = misc.locate_latest_pkl(result_dir)
+        train.resume_pkl = pkl
+        train.resume_kimg = kimg
+    except:
+        print('Couldn\'t find valid snapshot, starting over')
+        resume_pkl = None
     train.data_dir = data_dir
     train.total_kimg = total_kimg
     train.mirror_augment = mirror_augment
-    train.image_snapshot_ticks = 1 # TODO: Previous value was 10. Add as parameter
-    train.network_snapshot_ticks = 1
+    train.image_snapshot_ticks = image_snapshot_ticks
+    train.network_snapshot_ticks = network_snapshot_ticks
     train.resume_pkl = resume_pkl
-    train.resume_kimg = resume_kimg
     sched.G_lrate_base = sched.D_lrate_base = 0.002
     sched.minibatch_size_base = 8 # TODO: Reevaluate. Previous value was 32
     sched.minibatch_gpu_base = 8 # TODO: Reevaluate. Previous value was 4
@@ -171,9 +176,9 @@ def main():
     parser.add_argument('--gamma', help='R1 regularization weight (default is config dependent)', default=None, type=float)
     parser.add_argument('--mirror-augment', help='Mirror augment (default: %(default)s)', default=False, metavar='BOOL', type=_str_to_bool)
     parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: %(default)s)', default='fid50k', type=_parse_comma_sep)
-    parser.add_argument('--resume-pkl', help='Resume from pkl file.', default=None)
-    parser.add_argument('--resume-kimg', help='Resume from kimg', default=0.0, type=float)
-
+    parser.add_argument('--image_snapshot_ticks', help='How often to save an image snapshot.', default=1, type=int, metavar='N')
+    parser.add_argument('--network_snapshot_ticks', help='How often to save a network snapshot.', default=1, type=int, metavar='N')
+    parser.add_argument('--resume_pkl', help='Set the path to the desired pkl to resume training from, or find the latest pkl.', default='latest')
     args = parser.parse_args()
 
     if not os.path.exists(args.data_dir):
@@ -197,4 +202,3 @@ if __name__ == "__main__":
     main()
 
 #----------------------------------------------------------------------------
-
