@@ -14,6 +14,7 @@ import sys
 from tqdm import tqdm_notebook as tqdm
 import scipy.interpolate as interpolate
 from opensimplex import OpenSimplex
+import os
 
 import pretrained_networks
 
@@ -58,7 +59,7 @@ def generate_latent_images(zs, truncation_psi,save_npy,prefix):
         if save_npy:
           np.save(dnnlib.make_run_dir_path('%s%05d.npy' % (prefix,z_idx)), z)
 
-def generate_images_in_w_space(dlatents, truncation_psi):
+def generate_images_in_w_space(dlatents, truncation_psi,save_npy,prefix):
     Gs_kwargs = dnnlib.EasyDict()
     Gs_kwargs.output_transform = dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=True)
     Gs_kwargs.randomize_noise = False
@@ -74,6 +75,8 @@ def generate_images_in_w_space(dlatents, truncation_psi):
         dl = (dlatent-dlatent_avg)*truncation_psi   + dlatent_avg
         row_images = Gs.components.synthesis.run(dlatent,  **Gs_kwargs)
         PIL.Image.fromarray(row_images[0], 'RGB').save(dnnlib.make_run_dir_path('frame%05d.png' % row))
+        if save_npy:
+            np.save(dnnlib.make_run_dir_path('%s%05d.npy' % (prefix,row)), dlatent)
 
 def line_interpolate(zs, steps):
    out = []
@@ -83,7 +86,7 @@ def line_interpolate(zs, steps):
      out.append(zs[i+1]*fraction + zs[i]*(1-fraction))
    return out
 
-def truncation_traversal(network_pkl, seed=[0],start=-1.0,stop=1.0,increment=0.1):
+def truncation_traversal(network_pkl,npys,seed=[0],start=-1.0,stop=1.0,increment=0.1):
     print('Loading networks from "%s"...' % network_pkl)
     _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
     noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
@@ -112,7 +115,7 @@ def truncation_traversal(network_pkl, seed=[0],start=-1.0,stop=1.0,increment=0.1
 
 #----------------------------------------------------------------------------
 
-def generate_images(network_pkl, seeds, truncation_psi):
+def generate_images(network_pkl, seeds, npy_files, truncation_psi):
     print('Loading networks from "%s"...' % network_pkl)
     _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
     noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
@@ -123,17 +126,34 @@ def generate_images(network_pkl, seeds, truncation_psi):
     if truncation_psi is not None:
         Gs_kwargs.truncation_psi = truncation_psi
 
-    for seed_idx, seed in enumerate(seeds):
-        print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx+1, len(seeds)))
-        rnd = np.random.RandomState(seed)
-        z = rnd.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
-        tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
-        images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
-        PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('seed%04d.png' % seed))
+    if seeds is not None:
+        for seed_idx, seed in enumerate(seeds):
+            print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx+1, len(seeds)))
+            rnd = np.random.RandomState(seed)
+            z = rnd.randn(1, *Gs.input_shape[1:]) # [minibatch, component]
+            tflib.set_vars({var: rnd.randn(*var.shape.as_list()) for var in noise_vars}) # [height, width]
+            images = Gs.run(z, None, **Gs_kwargs) # [minibatch, height, width, channel]
+            PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('seed%04d.png' % seed))
+        
+    if npy_files is not None:
+        npys = npy_files.split(',')
+        dlatent_avg = Gs.get_var('dlatent_avg') # [component]
+        
+        for npy in range(len(npys)):
+            print('Generating image from npy (%d/%d) ...' % (npy+1, len(npys)))
+            w = np.load(npys[npy])
+            print(w.shape)
+            rnd = np.random.RandomState(1)
+            dl = (w-dlatent_avg)*truncation_psi   + dlatent_avg
+            images = Gs.components.synthesis.run(w,  **Gs_kwargs) # [minibatch, height, width, channel]
+            name = os.path.basename(npys[npy])
+            PIL.Image.fromarray(images[0], 'RGB').save(dnnlib.make_run_dir_path('%s.png' % name))
+        
+     
         
 #----------------------------------------------------------------------------
 
-def generate_neighbors(network_pkl, seeds, diameter, truncation_psi, num_samples, save_vector):
+def generate_neighbors(network_pkl, seeds, npys, diameter, truncation_psi, num_samples, save_vector):
     global _G, _D, Gs, noise_vars
     print('Loading networks from "%s"...' % network_pkl)
     _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
@@ -220,12 +240,21 @@ def get_latent_interpolation_bspline(endpoints, nf, k, s, shuffle):
     latents = latents / np.array(nss).reshape((512,1))
     return latents.T
 
-def generate_latent_walk(network_pkl, truncation_psi, walk_type, frames, seeds,diameter=2.0, start_seed=0 ):
+def generate_latent_walk(network_pkl, truncation_psi, walk_type, frames, seeds, npys, save_vector, diameter=2.0, start_seed=0):
     global _G, _D, Gs, noise_vars
     print('Loading networks from "%s"...' % network_pkl)
     _G, _D, Gs = pretrained_networks.load_networks(network_pkl)
     noise_vars = [var for name, var in Gs.components.synthesis.vars.items() if name.startswith('noise')]
-    zs = generate_zs_from_seeds(seeds,Gs)
+    zs = []
+    
+    if(len(seeds) > 0):
+        zs = generate_zs_from_seeds(seeds,Gs)
+    elif(len(npys) > 0):
+        zs = npys
+        
+    if(len(zs) > 2 ):
+        print('not enough values to generate walk')
+#         return false;
 
     walk_type = walk_type.split('-')
     
@@ -270,11 +299,11 @@ def generate_latent_walk(network_pkl, truncation_psi, walk_type, frames, seeds,d
       # ws = []
       # for i in enumerate(len(points)):
       #   ws.append(convertZtoW(points[i]))
-      generate_images_in_w_space(points, truncation_psi)
+      generate_images_in_w_space(points, truncation_psi,save_vector,'frame')
     elif (len(walk_type)>1 and walk_type[1] == 'w'):
       print('%s is not currently supported in w space, please change your interpolation type' % (walk_type[0]))
     else:
-      generate_latent_images(points, truncation_psi,False,'frame')
+      generate_latent_images(points, truncation_psi,save_vector,'frame')
 
 #----------------------------------------------------------------------------
 
@@ -338,6 +367,19 @@ def _parse_num_range(s):
     vals = s.split(',')
     return [int(x) for x in vals]
 
+
+#----------------------------------------------------------------------------
+
+def _parse_npy_files(files):
+    '''Accept a comma separated list of npy files and return a list of z vectors.'''
+    print(files)
+    zs =[]
+    
+    for f in files:
+        zs.append(np.load(files[f]))
+        
+    return zs
+        
 #----------------------------------------------------------------------------
 
 _examples = '''examples:
@@ -375,6 +417,7 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_truncation_traversal = subparsers.add_parser('truncation-traversal', help='Generate truncation walk')
     parser_truncation_traversal.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
     parser_truncation_traversal.add_argument('--seed', type=_parse_num_range, help='Singular seed value')
+    parser_truncation_traversal.add_argument('--npys', type=_parse_npy_files, help='List of .npy files')
     parser_truncation_traversal.add_argument('--start', type=float, help='Starting value')
     parser_truncation_traversal.add_argument('--stop', type=float, help='Stopping value')
     parser_truncation_traversal.add_argument('--increment', type=float, help='Incrementing value')
@@ -386,13 +429,16 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     parser_generate_latent_walk.add_argument('--walk-type', help='Type of walk (default: %(default)s)', default='line')
     parser_generate_latent_walk.add_argument('--frames', type=int, help='Frame count (default: %(default)s', default=240)
     parser_generate_latent_walk.add_argument('--seeds', type=_parse_num_range, help='List of random seeds')
+    parser_generate_latent_walk.add_argument('--npys', type=_parse_npy_files, help='List of .npy files')
+    parser_generate_latent_walk.add_argument('--save_vector', dest='save_vector', action='store_true', help='also save vector in .npy format')
     parser_generate_latent_walk.add_argument('--diameter', type=float, help='diameter of noise loop', default=2.0)
     parser_generate_latent_walk.add_argument('--start_seed', type=int, help='random seed to start noise loop from', default=0)
     parser_generate_latent_walk.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
     parser_generate_neighbors = subparsers.add_parser('generate-neighbors', help='Generate random neighbors of a seed')
     parser_generate_neighbors.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
-    parser_generate_neighbors.add_argument('--seeds', type=_parse_num_range, help='List of random seeds', required=True)
+    parser_generate_neighbors.add_argument('--seeds', type=_parse_num_range, help='List of random seeds')
+    parser_generate_neighbors.add_argument('--npys', type=_parse_npy_files, help='List of .npy files')
     parser_generate_neighbors.add_argument('--diameter', type=float, help='distance around seed to sample from', default=0.1)
     parser_generate_neighbors.add_argument('--save_vector', dest='save_vector', action='store_true', help='also save vector in .npy format')
     parser_generate_neighbors.add_argument('--num_samples', type=int, help='How many neighbors to generate (default: %(default)s', default=25)
@@ -401,7 +447,8 @@ Run 'python %(prog)s <subcommand> --help' for subcommand help.''',
     
     parser_generate_images = subparsers.add_parser('generate-images', help='Generate images')
     parser_generate_images.add_argument('--network', help='Network pickle filename', dest='network_pkl', required=True)
-    parser_generate_images.add_argument('--seeds', type=_parse_num_range, help='List of random seeds', required=True)
+    parser_generate_images.add_argument('--seeds', type=_parse_num_range, help='List of random seeds')
+    parser_generate_images.add_argument('--npys', help='List of .npy files', dest='npy_files')
     parser_generate_images.add_argument('--truncation-psi', type=float, help='Truncation psi (default: %(default)s)', default=0.5)
     parser_generate_images.add_argument('--result-dir', help='Root directory for run results (default: %(default)s)', default='results', metavar='DIR')
 
