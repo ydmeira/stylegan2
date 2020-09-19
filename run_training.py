@@ -45,19 +45,22 @@ def run(dataset, data_dir, result_dir, config_id, num_gpus, total_kimg, gamma, m
     grid      = EasyDict(size='8k', layout='random')                           # Options for setup_snapshot_image_grid().
     sc        = dnnlib.SubmitConfig()                                          # Options for dnnlib.submit_run().
     tf_config = {'rnd.np_random_seed': 1000}                                   # Options for tflib.init_tf().
-    try:
-        pkl, kimg = misc.locate_latest_pkl(result_dir)
-        train.resume_pkl = pkl
-        train.resume_kimg = kimg
-    except:
-        print('Couldn\'t find valid snapshot, starting over')
-        resume_pkl = None
+    train.resume_pkl = resume_pkl
+    if train.resume_pkl == 'latest':
+        try:
+            pkl, kimg = misc.locate_latest_pkl(result_dir)
+            train.resume_pkl = pkl
+            train.resume_kimg = kimg
+        except:
+            print('Couldn\'t find valid snapshot, starting over')
+            train.resume_pkl = None
+    if train.resume_pkl == None:
+        train.resume_kimg = 0
     train.data_dir = data_dir
     train.total_kimg = total_kimg
     train.mirror_augment = mirror_augment
     train.image_snapshot_ticks = image_snapshot_ticks
     train.network_snapshot_ticks = network_snapshot_ticks
-    train.resume_pkl = resume_pkl
     sched.G_lrate_base = sched.D_lrate_base = 0.002
     sched.minibatch_size_base = 8 # TODO: Reevaluate. Previous value was 32
     sched.minibatch_gpu_base = 8 # TODO: Reevaluate. Previous value was 4
@@ -144,6 +147,14 @@ def _parse_comma_sep(s):
         return []
     return s.split(',')
 
+
+def _parse_none_latest(s):
+    if s is None or s.lower() == 'none' or s == '':
+        return None
+    if s.lower() == 'latest':
+        return 'latest'
+    return s
+
 #----------------------------------------------------------------------------
 
 _examples = '''examples:
@@ -178,7 +189,7 @@ def main():
     parser.add_argument('--metrics', help='Comma-separated list of metrics or "none" (default: %(default)s)', default='fid50k', type=_parse_comma_sep)
     parser.add_argument('--image-snapshot-ticks', help='How often to save an image snapshot.', default=1, type=int, metavar='N')
     parser.add_argument('--network-snapshot-ticks', help='How often to save a network snapshot.', default=1, type=int, metavar='N')
-    parser.add_argument('--resume-pkl', help='Set the path to the desired pkl to resume training from, or find the latest pkl.', default='latest')
+    parser.add_argument('--resume-pkl', help='Set the path to the desired pkl to resume training from, find the \'latest\' pkl, or start from \'none\'', default=None, type=_parse_none_latest)
     args = parser.parse_args()
 
     if not os.path.exists(args.data_dir):
